@@ -17,11 +17,11 @@ Our objective is to assist Danny in realizing his vision for Clique Bait. We nee
 ## Key SQL Syuntax and Functions
 
 ## Questions and Solutions
-> # Part A. Enterprise Relationship Diagram
+### Part A. Enterprise Relationship Diagram
 
-Using the following DDL schema details to create an ERD for all the Clique Bait datasets.
+> Using the following DDL schema details to create an ERD for all the Clique Bait datasets.
+> [Click here](https://dbdiagram.io/) to access the DB Diagram tool to create the ERD.
 
-[Click here](https://dbdiagram.io/) to access the DB Diagram tool to create the ERD.
 ```sql
 CREATE TABLE clique_bait.event_identifier (
   "event_type" INTEGER,
@@ -59,7 +59,7 @@ CREATE TABLE clique_bait.events (
 );
 ```
 *Solution*
-```
+```sql
 TABLE clique_bait.event_identifier {
   event_type integer
   event_name varchar
@@ -105,19 +105,137 @@ Ref: "clique_bait"."events"."page_id" > "clique_bait"."page_heirarchy"."page_id"
 ```
 ![Screenshot 2023-08-05 at 9 45 11 pm](https://github.com/jef-fortunahamid/CaseStudy6_CliqueBait/assets/125134025/8b64a5b2-8d9f-42cb-ad71-4c0fbe7a3321)
 
+### Part B: Digital Analysis
+> 1. How many users are there?
+```sql
+SELECT 
+  COUNT(DISTINCT user_id) AS unique_user_count
+FROM clique_bait.users;
+```
 
+> 2. How many cookies does each user have on average?
+```sql
+WITH user_cookie_count AS (
+  SELECT 
+      user_id
+    , COUNT(cookie_id) AS cookie_count_per_user
+  FROM clique_bait.users
+  GROUP BY user_id
+)
+SELECT
+  ROUND(AVG(cookie_count_per_user), 2) AS avg_cookie_count
+FROM user_cookie_count;
+```
 
+> 3. What is the unique number of visits by all users per month?
+```sql
+SELECT
+    DATE_TRUNC('month', event_time)::DATE AS month_start
+  , COUNT(DISTINCT visit_id) AS unique_visits
+FROM clique_bait.events
+GROUP BY month_start
+ORDER BY month_start;
+```
 
+> 4. What is the number of events for each event type?
+```sql
+SELECT
+    events.event_type
+  , event_identifier.event_name
+  , SUM(1) AS count_events
+FROM clique_bait.events
+INNER JOIN clique_bait.event_identifier
+  ON events.event_type = event_identifier.event_type
+GROUP BY
+    events.event_type
+  , event_identifier.event_name
+ORDER BY events.event_type;
+```
 
+> 5. What is the percentage of visits which have a purchase event?
+```sql
+WITH visits_with_purchase AS (
+  SELECT
+      visit_id
+    , SUM(CASE WHEN event_type = 3 THEN 1 ELSE 0 END) AS purchase_flag
+  FROM clique_bait.events
+  GROUP BY visit_id
+)
+SELECT
+  ROUND(100 * SUM(purchase_flag) / COUNT(*), 2) AS purchase_percentage
+FROM visits_with_purchase;
+```
 
+> 6. What is the percentage of visits which view the checkout page but do not have a purchase event?
+```sql
+WITH checkout_purchase_visit AS (
+  SELECT
+      visit_id
+    , MAX(CASE WHEN event_type = 1 and page_id = 12 THEN 1 ELSE 0 END) AS checkout_flag
+    , MAX(CASE WHEN event_type = 3 THEN 1 ELSE 0 END) AS purchase_flag
+  FROM clique_bait.events
+  GROUP BY visit_id
+)
+SELECT
+  ROUND(100 * SUM(CASE WHEN purchase_flag = 0 THEN 1 ELSE 0 END)::NUMERIC/ COUNT(*), 2) AS checkout_without_purchase_percentage
+FROM checkout_purchase_visit
+WHERE checkout_flag = 1
+```
 
+> 7. What are the top 3 pages by number of views?
+```sql
+SELECT
+    t2.page_name
+  , COUNT(1) AS page_views
+FROM clique_bait.events AS t1 
+INNER JOIN clique_bait.page_hierarchy as t2 
+  ON t1.page_id = t2. page_id
+WHERE event_type = 1
+GROUP BY t2.page_name
+ORDER BY page_views DESC
+LIMIT 3;
+```
 
+> 8. What is the number of views and cart adds for each product category?
+```sql
+SELECT
+    page_hierarchy.product_category
+  , SUM(CASE WHEN events.event_type = 1 THEN 1 ELSE 0 END) AS page_views
+  , SUM(CASE WHEN events.event_type = 2 THEN 1 ELSE 0 END) AS cart_adds
+FROM clique_bait.events
+INNER JOIN clique_bait.page_hierarchy
+  ON events.page_id = page_hierarchy.page_id
+WHERE product_category IS NOT NULL
+GROUP BY product_category
+ORDER BY page_views DESC;
+```
 
-
-
-
-
-
+> 9. What are the top 3 products by purchases?
+```sql
+WITH purchase_visits AS (
+  SELECT
+    visit_id
+  FROM clique_bait.events
+  WHERE event_type = 3
+)
+SELECT
+    page_hierarchy.product_id
+  , page_hierarchy.page_name AS product_name
+  , SUM(CASE WHEN event_type = 2 THEN 1 ELSE 0 END) AS purchases
+FROM clique_bait.events 
+INNER JOIN clique_bait.page_hierarchy 
+  ON events.page_id = page_hierarchy.page_id
+WHERE EXISTS (
+  SELECT NULL
+  FROM purchase_visits
+  WHERE events.visit_id = purchase_visits.visit_id
+)
+AND page_hierarchy.product_id IS NOT NULL
+GROUP BY 
+    page_hierarchy.product_id
+  , page_hierarchy.page_name
+ORDER BY page_hierarchy.product_id;
+```
 
 
 
