@@ -237,6 +237,221 @@ GROUP BY
 ORDER BY page_hierarchy.product_id;
 ```
 
+### Part C: Product Funnel Analysis
 
+>  Using a single SQL query - create a new output table which has the following details:
+> - How many times was each product viewed?
+> - How many times was each product added to cart?
+> - How many times was each product added to a cart but not purchased (abandoned)?
+> - How many times was each product purchased?
+> 
+> Additionally, create another table which further aggregates the data for the above points but this time for each product category instead of individual products.
 
+**Table 1**
+```sql
+DROP TABLE IF EXISTS product_info;
+CREATE TEMP TABLE product_info AS
+WITH product_page_events AS (
+  SELECT
+      events.visit_id
+    , page_hierarchy.product_id
+    , page_hierarchy.page_name
+    , page_hierarchy.product_category
+    , SUM(CASE WHEN event_type = 1 THEN 1 ELSE 0 END) AS page_view
+    , SUM(CASE WHEN event_type = 2 THEN 1 ELSE 0 END) AS cart_add
+  FROM clique_bait.events
+  INNER JOIN clique_bait.page_hierarchy
+    ON events.page_id = page_hierarchy.page_id
+  WHERE page_hierarchy.product_id IS NOT NULL
+  GROUP BY
+      events.visit_id
+    , page_hierarchy.product_id
+    , page_hierarchy.page_name
+    , page_hierarchy.product_category
+),
+visit_purchase AS (
+  SELECT DISTINCT
+    visit_id
+  FROM clique_bait.events
+  WHERE event_type = 3
+),
+combined_product_events AS (
+  SELECT
+      t1.visit_id
+    , t1.product_id
+    , t1.page_name
+    , t1.product_category
+    , t1.page_view
+    , t1.cart_add
+    , CASE WHEN t2.visit_id IS NOT NULL THEN 1 ELSE 0 END AS purchase
+  FROM product_page_events AS t1
+  LEFT JOIN visit_purchase  AS t2
+    ON t1.visit_id = t2.visit_id
+)
+SELECT
+    product_id
+  , page_name AS product 
+  , product_category
+  , SUM(page_view) AS page_views
+  , SUM(cart_add) AS cart_adds
+  , SUM(CASE WHEN cart_add = 1 AND purchase = 0 THEN 1 ELSE 0 END) AS abandoned
+  , SUM(CASE WHEN cart_add = 1 AND purchase = 1 THEN 1 ELSE 0 END) AS purchases
+FROM combined_product_events
+GROUP BY product_id, product, product_category 
+ORDER BY product_id;
 
+SELECT * FROM product_info;
+```
+
+**Table 2**
+```sql
+DROP TABLE IF EXISTS product_category_info;
+CREATE TEMP TABLE product_category_info AS 
+SELECT
+    product_category
+  , SUM(page_views) AS page_views
+  , SUM(cart_adds) AS cart_adds
+  , SUM(abandoned) AS abandoned
+  , SUM(purchases) AS purchases
+FROM product_info
+GROUP BY product_category;
+
+SELECT * FROM product_category_info;
+```
+
+> 1. Which product had the most views, cart adds and purchases?
+```sql
+SELECT 
+    product 
+  , page_views
+FROM product_info
+ORDER BY page_views DESC
+LIMIT 1;
+
+SELECT 
+    product 
+  , cart_adds
+FROM product_info
+ORDER BY cart_adds DESC
+LIMIT 1;
+
+SELECT 
+    product 
+  , purchases
+FROM product_info
+ORDER BY purchases DESC
+LIMIT 1;
+```
+
+> 2. Which product was most likely to be abandoned?
+```sql
+SELECT
+    product 
+  , ROUND(abandoned::NUMERIC / cart_adds, 2) AS abandoned_likelihood
+FROM product_info
+ORDER BY abandoned_likelihood DESC
+LIMIT 1;
+```
+
+> 3. Which product had the highest view to purchase percentage?
+```sql
+SELECT
+    product 
+  , ROUND(100 * purchases / page_views, 2) AS view_to_purchase_percentage
+FROM product_info
+ORDER BY percentage DESC
+LIMIT 1;
+```
+> 4. What is the average conversion rate from view to cart add?
+```sql
+SELECT
+  ROUND(AVG(100 * cart_adds / page_views), 2) AS avg_view_to_cart_add
+FROM product_info;
+```
+
+> 5. What is the average conversion rate from cart add to purchase?
+```sql
+SELECT
+  ROUND(AVG(100 * purchases / cart_adds), 2) AS avg_cart_add_to_purchase
+FROM product_info;
+```
+
+### Part D: Campaign Analysis
+> Generate a table that has 1 single row for every unique visit_id record and has the following columns:
+> - `user_id`
+> - `visit_id`
+> - `visit_start_time`: the earliest `event_time` for each visit
+> - `page_views`: count of page views for each visit
+> - `cart_adds`: count of product cart add events for each visit
+> - `purchase`: 1/0 flag if a purchase event exists for each visit
+> - `campaign_name`: map the visit to a campaign if the `visit_start_time` falls between the `start_date` and `end_date`
+> - `impression`: count of ad impressions for each visit
+> - `click`: count of ad clicks for each visit
+> - **(Optional column)** `cart_products`: a comma separated text value with products added to the cart sorted by the order they were added to the cart (hint: use the `sequence_number`)
+> 
+> Use the subsequent dataset to generate at least 5 insights for the Clique Bait team - bonus: prepare a single A4 infographic that the team can use for their management reporting sessions, be sure to emphasise the most important points from your findings.
+> 
+> Some ideas you might want to investigate further include:
+> - Identifying users who have received impressions during each campaign period and comparing each metric with other users who did not have an impression > event
+> - Does clicking on an impression lead to higher purchase rates?
+> - What is the uplift in purchase rate when comparing users who click on a campaign impression versus users who do not receive an impression? What if we compare them with users who just an impression but do not click?
+> - What metrics can you use to quantify the success or failure of each campaign compared to eachother?
+
+```sql
+DROP TABLE IF EXISTS visit_summary;
+CREATE TEMP TABLE visit_summary AS
+SELECT
+    users.user_id
+  , events.visit_id
+  , MIN(events.event_time) AS visit_start_time
+  , SUM(CASE WHEN events.event_type = 1 THEN 1 ELSE 0 END) AS page_views
+  , SUM(CASE WHEN events.event_type = 2 THEN 1 ELSE 0 END) AS cart_adds
+  , MAX(CASE WHEN events.event_type = 3 THEN 1 ELSE 0 END) AS purchase
+  , campaign_identifier.campaign_name
+  , SUM(CASE WHEN events.event_type = 4 THEN 1 ELSE 0 END) AS impression
+  , SUM(CASE WHEN events.event_type = 5 THEN 1 ELSE 0 END) AS click
+  , STRING_AGG(
+          CASE WHEN page_hierarchy.product_id IS NOT NULL AND event_type = 2
+              THEN page_hierarchy.page_name
+            ELSE NULL END,
+          ', ' ORDER BY events.sequence_number
+        ) AS cart_products
+  FROM clique_bait.events
+  INNER JOIN clique_bait.users
+    ON events.cookie_id = users.cookie_id
+  LEFT JOIN clique_bait.campaign_identifier
+    ON events.event_time 
+          BETWEEN campaign_identifier.start_date 
+          AND campaign_identifier.end_date
+  LEFT JOIN clique_bait.page_hierarchy
+    ON events.page_id = page_hierarchy.page_id
+  GROUP BY
+      users.user_id
+  , events.visit_id
+  , campaign_identifier.campaign_name;
+
+SELECT * FROM visit_summary LIMIT 10;
+```
+> 1. Impression Effectiveness:
+> - Compare the average page views, cart adds, and purchases for visits with impressions (impression > 0) versus visits without impressions (impression = 0).
+```sql
+WITH with_without_impression AS (
+  SELECT
+      'with_impression' AS impression
+    , ROUND(AVG(page_views),2) AS avg_page_views
+    , ROUND(AVG(cart_adds), 2) AS avg_cart_adds
+    , ROUND(AVG(purchase), 2) AS avg_purchase
+  FROM visit_summary
+  WHERE impression > 0
+UNION
+  SELECT
+      'without_impression' AS impression
+    , ROUND(AVG(page_views),2) AS avg_page_views
+    , ROUND(AVG(cart_adds), 2) AS avg_cart_adds
+    , ROUND(AVG(purchase), 2) AS avg_purchase
+  FROM visit_summary
+  WHERE impression = 0
+)
+SELECT *
+FROM with_without_impression;
+```
